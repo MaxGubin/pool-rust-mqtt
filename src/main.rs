@@ -35,6 +35,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     auth_method: AuthMethod::WPA2Personal,
     ..Default::default()
   }))?;
+
+  // Set DHCP hostname
+  use esp_idf_svc::handle::RawHandle;
+  let netif_handle = wifi.sta_netif().handle();
+  unsafe {
+    if let Ok(hostname) = std::ffi::CString::new("pool-controller") {
+      let err = esp_idf_svc::sys::esp_netif_set_hostname(netif_handle, hostname.as_ptr());
+      if err != 0 {
+        warn!("Failed to set DHCP hostname: {}", err);
+      } else {
+        info!("DHCP Hostname set to 'pool-controller'");
+      }
+    }
+  }
+
   wifi.start()?;
   wifi.connect()?;
 
@@ -65,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   // 2. Initialize UART (Pins 16 and 17)
   info!("Initializing UART...");
-  let config = UartConfig::new().baudrate(115200.into());
+  let config = UartConfig::new().baudrate(9600.into());
   let uart = UartDriver::new(
     peripherals.uart1,
     peripherals.pins.gpio17, // TX
@@ -74,6 +89,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
     &config,
   )?;
+  let uart = std::sync::Arc::new(uart);
+
+  // Spawn a background thread to read from UART and print to log
+  let uart_reader = uart.clone();
+  std::thread::spawn(move || {
+    let mut rx_buf = [0u8; 256];
+    loop {
+      match uart_reader.read(&mut rx_buf, u32::MAX) {
+        Ok(0) => {}
+        Ok(len) => {
+          let data = &rx_buf[..len];
+          if let Ok(text) = std::str::from_utf8(data) {
+            info!("UART Received: {}", text.trim_end());
+          } else {
+            info!("UART Received (raw): {:?}", data);
+          }
+        }
+        Err(err) => {
+          error!("Error reading from UART: {:?}", err);
+          std::thread::sleep(Duration::from_millis(500));
+        }
+      }
+    }
+  });
 
   // 3. Initialize MQTT Client connected to HiveMQ Cloud
   info!("Connecting to HiveMQ Cloud: {}", HIVEMQ_HOST);
@@ -91,8 +130,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let client_clone = client.clone();
 
   // Spawn a background thread to process MQTT connection events and incoming messages
+  let uart_mqtt = uart.clone();
   std::thread::spawn(move || {
     let client = client_clone;
+    let uart = uart_mqtt;
     loop {
       match connection.next() {
         Ok(event) => match event.payload() {
