@@ -86,62 +86,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   };
 
   let broker_url = format!("mqtts://{}", HIVEMQ_HOST);
-  let (mut client, mut connection) = EspMqttClient::new(&broker_url, &mqtt_config)?;
-  loop {
-    if let Ok(event) = connection.next() {
-      if let esp_idf_svc::mqtt::client::EventPayload::Connected(_) = event.payload() {
-        info!("Successfully connected");
-        break;
-      }
-    }
-    std::thread::sleep(Duration::from_millis(50));
-  }
+  let (client, mut connection) = EspMqttClient::new(&broker_url, &mqtt_config)?;
+  let client = std::sync::Arc::new(std::sync::Mutex::new(client));
+  let client_clone = client.clone();
 
   // Spawn a background thread to process MQTT connection events and incoming messages
   std::thread::spawn(move || {
-    while let Ok(event) = connection.next() {
-      match event.payload() {
-        esp_idf_svc::mqtt::client::EventPayload::Connected(_) => {
-          info!("MQTT Connected successfully!");
-        }
-        esp_idf_svc::mqtt::client::EventPayload::Disconnected => {
-          warn!("MQTT Disconnected from broker!");
-        }
-        esp_idf_svc::mqtt::client::EventPayload::Subscribed(_) => {
-          info!("MQTT Subscription confirmed by broker!");
-        }
-        esp_idf_svc::mqtt::client::EventPayload::Received { topic, data, .. } => {
-          let topic = topic.unwrap_or("");
-          let payload = data;
-          info!("Received command on topic '{}': {:?}", topic, payload);
+    let client = client_clone;
+    loop {
+      match connection.next() {
+        Ok(event) => match event.payload() {
+          esp_idf_svc::mqtt::client::EventPayload::Connected(_) => {
+            info!("MQTT Connected successfully!");
+            info!("Setting up subscriptions in a background thread...");
+            let client_subscribe = client.clone();
+            std::thread::spawn(move || {
+              let mut guard = client_subscribe.lock().unwrap();
+              if let Err(err) = guard.subscribe("pool/pump/set", QoS::AtMostOnce) {
+                error!("Failed to subscribe to pool/pump/set: {:?}", err);
+              }
+              if let Err(err) = guard.subscribe("pool/light/set", QoS::AtMostOnce) {
+                error!("Failed to subscribe to pool/light/set: {:?}", err);
+              }
+              info!("Subscriptions have been set up.");
+            });
+          }
+          esp_idf_svc::mqtt::client::EventPayload::Disconnected => {
+            warn!("MQTT Disconnected from broker!");
+          }
+          esp_idf_svc::mqtt::client::EventPayload::Subscribed(_) => {
+            info!("MQTT Subscription confirmed by broker!");
+          }
+          esp_idf_svc::mqtt::client::EventPayload::Received { topic, data, .. } => {
+            let topic = topic.unwrap_or("");
+            let payload = data;
+            info!("Received command on topic '{}': {:?}", topic, payload);
 
-          if topic == "pool/pump/set" {
-            if payload == b"ON" {
-              info!("Turning pump ON!");
-              uart.write(b"PUMP:ON\r\n").unwrap();
-            } else if payload == b"OFF" {
-              info!("Turning pump OFF!");
-              uart.write(b"PUMP:OFF\r\n").unwrap();
-            }
-          } else if topic == "pool/light/set" {
-            if payload == b"ON" {
-              info!("Turning light ON!");
-              uart.write(b"LIGHT:ON\r\n").unwrap();
-            } else if payload == b"OFF" {
-              info!("Turning light OFF!");
-              uart.write(b"LIGHT:OFF\r\n").unwrap();
+            if topic == "pool/pump/set" {
+              if payload == b"ON" {
+                info!("Turning pump ON!");
+                uart.write(b"PUMP:ON\r\n").unwrap();
+              } else if payload == b"OFF" {
+                info!("Turning pump OFF!");
+                uart.write(b"PUMP:OFF\r\n").unwrap();
+              }
+            } else if topic == "pool/light/set" {
+              if payload == b"ON" {
+                info!("Turning light ON!");
+                uart.write(b"LIGHT:ON\r\n").unwrap();
+              } else if payload == b"OFF" {
+                info!("Turning light OFF!");
+                uart.write(b"LIGHT:OFF\r\n").unwrap();
+              }
             }
           }
+          _ => {}
+        },
+        Err(err) => {
+          error!("MQTT connection next() returned error: {:?}. Retrying in 2 seconds...", err);
+          std::thread::sleep(Duration::from_secs(2));
         }
-        _ => {}
       }
     }
   });
-
-  // Subscribe to topics
-  info!("Setting up subscriptions");
-  client.subscribe("pool/pump/set", QoS::AtMostOnce)?;
-  client.subscribe("pool/light/set", QoS::AtMostOnce)?;
 
   // 4. Main reporting loop
   info!("Pool controller loop running...");
@@ -149,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::sleep(Duration::from_secs(30));
     info!("Reporting current pool state...");
     // Publish pool temperature
-    if let Err(err) = client.publish("pool/temp", QoS::AtMostOnce, false, b"78.5") {
+    if let Err(err) = client.lock().unwrap().publish("pool/temp", QoS::AtMostOnce, false, b"78.5") {
       error!("Failed to publish pool temperature: {:?}", err);
     }
   }
