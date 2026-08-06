@@ -11,6 +11,8 @@ use esp_idf_svc::{
 use log::*;
 use std::time::Duration;
 
+pub mod pentair;
+
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PW: &str = env!("WIFI_PW");
 const HIVEMQ_HOST: &str = env!("HIVEMQ_HOST");

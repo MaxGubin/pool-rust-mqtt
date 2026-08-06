@@ -7,3 +7,6 @@ target = "xtensa-esp32-espidf"
 
 [unstable]
 build-std = ["std", "panic_abort"]
+
+[alias]
+test-no-flash = "test --no-run"
