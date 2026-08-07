@@ -12,6 +12,7 @@ use log::*;
 use std::time::Duration;
 
 pub mod pentair;
+pub mod pool_worker;
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PW: &str = env!("WIFI_PW");
@@ -22,6 +23,10 @@ const HIVEMQ_PW: &str = env!("HIVEMQ_PW");
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   esp_idf_svc::sys::link_patches();
   esp_idf_svc::log::EspLogger::initialize_default();
+  log::set_max_level(log::LevelFilter::Debug);
+  unsafe {
+    esp_idf_svc::sys::esp_log_level_set(b"*\0".as_ptr() as *const _, 4);
+  }
 
   info!("Initializing Peripherals...");
   let peripherals = Peripherals::take()?;
@@ -91,30 +96,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
     &config,
   )?;
-  let uart = std::sync::Arc::new(uart);
-
-  // Spawn a background thread to read from UART and print to log
-  let uart_reader = uart.clone();
-  std::thread::spawn(move || {
-    let mut rx_buf = [0u8; 256];
-    loop {
-      match uart_reader.read(&mut rx_buf, u32::MAX) {
-        Ok(0) => {}
-        Ok(len) => {
-          let data = &rx_buf[..len];
-          if let Ok(text) = std::str::from_utf8(data) {
-            info!("UART Received: {}", text.trim_end());
-          } else {
-            info!("UART Received (raw): {:?}", data);
-          }
-        }
-        Err(err) => {
-          error!("Error reading from UART: {:?}", err);
-          std::thread::sleep(Duration::from_millis(500));
-        }
-      }
-    }
-  });
 
   // 3. Initialize MQTT Client connected to HiveMQ Cloud
   info!("Connecting to HiveMQ Cloud: {}", HIVEMQ_HOST);
@@ -131,11 +112,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let client = std::sync::Arc::new(std::sync::Mutex::new(client));
   let client_clone = client.clone();
 
+  // Initialize outgoing queue for Pentair messages
+  let outgoing_queue = pool_worker::MessageQueue::new();
+  let outgoing_queue_clone = outgoing_queue.clone();
+
+  // Spawn the pool worker that handles UART reads, decoding, reliable sends and ACKs
+  pool_worker::spawn_pool_worker(uart, client.clone(), outgoing_queue);
+
   // Spawn a background thread to process MQTT connection events and incoming messages
-  let uart_mqtt = uart.clone();
   std::thread::spawn(move || {
     let client = client_clone;
-    let uart = uart_mqtt;
     loop {
       match connection.next() {
         Ok(event) => match event.payload() {
@@ -166,21 +152,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Received command on topic '{}': {:?}", topic, payload);
 
             if topic == "pool/pump/set" {
-              if payload == b"ON" {
-                info!("Turning pump ON!");
-                uart.write(b"PUMP:ON\r\n").unwrap();
-              } else if payload == b"OFF" {
-                info!("Turning pump OFF!");
-                uart.write(b"PUMP:OFF\r\n").unwrap();
-              }
+              let state = payload == b"ON";
+              info!("Queuing Pentair Pool CircuitChange command (state: {})", state);
+              outgoing_queue_clone
+                .push(pentair::PentairMessage::CircuitChange(pentair::Circuit::Pool, state));
             } else if topic == "pool/light/set" {
-              if payload == b"ON" {
-                info!("Turning light ON!");
-                uart.write(b"LIGHT:ON\r\n").unwrap();
-              } else if payload == b"OFF" {
-                info!("Turning light OFF!");
-                uart.write(b"LIGHT:OFF\r\n").unwrap();
-              }
+              let state = payload == b"ON";
+              info!("Queuing Pentair Aux1 (Light) CircuitChange command (state: {})", state);
+              outgoing_queue_clone
+                .push(pentair::PentairMessage::CircuitChange(pentair::Circuit::Aux1, state));
             }
           }
           _ => {}
