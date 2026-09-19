@@ -154,8 +154,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if topic == "pool/pump/set" {
               let state = payload == b"ON";
               info!("Queuing Pentair Pool CircuitChange command (state: {})", state);
-              outgoing_queue_clone
-                .push(pentair::PentairMessage::CircuitChange(pentair::Circuit::Pool, state));
+              //outgoing_queue_clone
+              //  .push(pentair::PentairMessage::CircuitChange(pentair::Circuit::Pool, state));
             } else if topic == "pool/light/set" {
               let state = payload == b"ON";
               info!("Queuing Pentair Aux1 (Light) CircuitChange command (state: {})", state);

@@ -1,9 +1,14 @@
-[target.xtensa-esp32-espidf]
-runner = "espflash flash --chip esp32 --monitor"
+[env]
+# Disambiguates the chip: "riscv32imac-esp-espidf" is shared by the ESP32-C6,
+# C61, C5 and H2, and ESP32-C6 would otherwise only be picked as the default.
+MCU = "esp32c6"
+
+[target.riscv32imac-esp-espidf]
+runner = "espflash flash --chip esp32c6 --monitor"
 linker = "ldproxy"
 
 [build]
-target = "xtensa-esp32-espidf"
+target = "riscv32imac-esp-espidf"
 
 [unstable]
 build-std = ["std", "panic_abort"]

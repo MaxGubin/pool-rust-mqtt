@@ -2,3 +2,4 @@ target
 .scripts
 .embuild
 *.lock
+*.log

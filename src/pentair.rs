@@ -6,12 +6,13 @@ use std::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
   InvalidMessage,
+  CheckSumError,
 }
 
 /// A trait that must be implemented by all structures that can decode a messages,
 /// sent ower serial interface.
 pub trait WireDecoder: Sized {
-  fn decode(data: &[u8]) -> Result<(Self, &[u8]), Error>;
+  fn decode(data: &[u8]) -> Result<Self, Error>;
 }
 
 /// A trait that must be implemented for all types that can be serialized to serial interface.
@@ -281,7 +282,7 @@ impl WireEncoder for SystemStateFrame {
 }
 
 impl WireDecoder for SystemState {
-  fn decode(packet: &[u8]) -> Result<(Self, &[u8]), Error> {
+  fn decode(packet: &[u8]) -> Result<Self, Error> {
     if packet.len() < 8 {
       return Err(Error::InvalidMessage);
     }
@@ -329,14 +330,16 @@ impl WireDecoder for SystemState {
       state.solar_temp = packet[24] as u32;
     }
 
-    Ok((state, &packet[8..]))
+    Ok(state)
   }
 }
 
 impl WireDecoder for PentairMessage {
-  fn decode(data: &[u8]) -> Result<(Self, &[u8]), Error> {
+  // Decodes a message ffrom the buffer:
+  fn decode(data: &[u8]) -> Result<Self, Error> {
     let mut idx = 0;
     while idx < data.len() {
+      // Skip until start og the package.
       if data[idx] == 0xA5 {
         if idx + 6 <= data.len() {
           let dlen = data[idx + 5] as usize;
@@ -355,7 +358,7 @@ impl WireDecoder for PentairMessage {
 
               let msg = match command {
                 0x02 => {
-                  let (state, _) = SystemState::decode(&packet_slice[1..6 + dlen])?;
+                  let state = SystemState::decode(&packet_slice[1..6 + dlen])?;
                   PentairMessage::Status(state)
                 }
                 0x86 => {
@@ -417,8 +420,7 @@ impl WireDecoder for PentairMessage {
                 }
               };
 
-              let remaining = &data[idx + total_len..];
-              return Ok((msg, remaining));
+              return Ok(msg);
             }
           }
         }

@@ -1,0 +1,7 @@
+# The connected board's flash chip is 4MB (confirmed via `espflash board-info`).
+# Without this, ESP-IDF defaults to CONFIG_ESPTOOLPY_FLASHSIZE_2MB, which auto-selects
+# a 32KB MMU page size. That mismatch against the real 4MB flash was causing:
+#   assert failed: mmu_hal_map_region ... (paddr % page_size_in_bytes == 0)
+# during early boot (flash-mapped PHY init data). Matching the real flash size selects
+# the standard 64KB MMU page size and avoids the misaligned mapping.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
